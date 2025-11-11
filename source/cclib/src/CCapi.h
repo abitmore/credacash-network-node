@@ -18,7 +18,7 @@
 #ifdef _WIN32
 #define CCAPI extern "C" __stdcall __declspec(dllimport) CCRESULT
 #else
-#define CCAPI extern "C" CCRESULT
+#define CCAPI extern "C" __attribute__((visibility("default"))) CCRESULT
 #endif // _WIN32
 #else
 #define CCAPI CCRESULT

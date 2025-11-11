@@ -9,3 +9,4 @@
 #pragma once
 
 void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor_port, const wstring& tor_config, const wstring& app_data_dir, bool need_outgoing, vector<TorService*>& services, unsigned tor_control_service_index = -1);
+void tor_start_process(const wstring& process_dir, const wstring& tor_exe, vector<wstring> &params, bool external_tor = false);

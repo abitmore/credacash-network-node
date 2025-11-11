@@ -6,26 +6,29 @@
  * ccwallet_dll.cpp
 */
 
-#ifdef __ANDROID__
-
-#include <jni.h>
-#include <android/log.h>
-
-#endif // __ANDROID__
-
-#ifdef __ANDROID__
-#define CCWALLET_EXPORT extern "C" JNIEXPORT JNICALL
-#else
-#define CCWALLET_EXPORT extern "C" __stdcall __declspec(dllexport)
-#endif
-
 #include "ccwallet.h"
+#include <tor.h>
 
 #include <inttypes.h>
 
 #include <boost/log/sinks/sync_frontend.hpp>
 #include <boost/log/sinks/basic_sink_backend.hpp>
 #include <boost/make_shared.hpp>
+
+#ifdef __ANDROID__
+#include <jni.h>
+#include <android/log.h>
+#endif
+
+#ifdef __ANDROID__
+#define CCWALLET_EXPORT extern "C" JNIEXPORT JNICALL
+#else
+#ifdef _WIN32
+#define CCWALLET_EXPORT extern "C" __stdcall __declspec(dllexport)
+#else
+#define CCWALLET_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
+#endif
 
 static int log_port;
 static string log_password;
@@ -111,12 +114,14 @@ struct ccwallet_dll_log_sink : public boost::log::sinks::basic_sink_backend<boos
 	}
 };
 
-CCWALLET_EXPORT void ccwallet_logging_start(int port, const char *password)
+CCWALLET_EXPORT void ccwallet_logging_start(int level, int port, const char *password)
 {
 	static mutex run_mutex;
 	lock_guard<mutex> lock(run_mutex);
 
-	cerr << "ccwallet_logging_start port " << port << " password " << password << endl;
+	cerr << "ccwallet_logging_start level " << level << " port " << port << " password " << password << endl;
+
+	set_trace_level(level);
 
 	log_port = port;
 	log_password = password;
@@ -125,20 +130,24 @@ CCWALLET_EXPORT void ccwallet_logging_start(int port, const char *password)
 	if (need_sink)
 	{
 		need_sink = false;
-	    boost::log::core::get()->add_sink(boost::make_shared<boost::log::sinks::synchronous_sink<ccwallet_dll_log_sink>>());
+		boost::log::core::get()->add_sink(boost::make_shared<boost::log::sinks::synchronous_sink<ccwallet_dll_log_sink>>());
 	}
 }
 
-static atomic<int> now_serving(0);
-static volatile int status = 0;
+/*
+	Functions to start ccwallet
+*/
 
-void ccwallet_server_gate(vector<string> &args, int my_number)
+static atomic<int> now_serving(0);
+static volatile int ccwallet_status = 0;
+
+static void ccwallet_server_thread(vector<string> &args, int my_number)
 {
 	//cerr << (intptr_t)&args << " " << buf2hex(&args, 10) << endl;
 
 	int argc = args.size();
 
-	BOOST_LOG_TRIVIAL(info) << "ccwallet_server_gate argc " << argc << " my_number " << my_number;
+	BOOST_LOG_TRIVIAL(info) << "ccwallet_server_thread argc " << argc << " my_number " << my_number;
 
 	if (my_number != now_serving)
 		return;
@@ -147,9 +156,9 @@ void ccwallet_server_gate(vector<string> &args, int my_number)
 
 	// shutdown server if running
 
-	if (status > 0) BOOST_LOG_TRIVIAL(info) << "ccwallet_server stopping...";
+	if (ccwallet_status > 0) BOOST_LOG_TRIVIAL(info) << "ccwallet_server stopping...";
 
-	while (status > 0)
+	while (ccwallet_status > 0)
 	{
 		start_shutdown();
 
@@ -161,16 +170,16 @@ void ccwallet_server_gate(vector<string> &args, int my_number)
 	if (my_number != now_serving)
 		return;
 
-	status = my_number; // status > 0 means running
+	ccwallet_status = my_number; // ccwallet_status > 0 means running
 
-	BOOST_LOG_TRIVIAL(info) << "ccwallet_server_gate status " << status;
+	BOOST_LOG_TRIVIAL(info) << "ccwallet_server_thread status " << ccwallet_status;
 
 	const char *argv[argc];
 
 	for (int i = 0; i < argc; ++i)
 	{
 		argv[i] = args[i].c_str();
-		//BOOST_LOG_TRIVIAL(info) << "ccwallet_server_gate " << argc << " " << i << " " << argv[i];
+		//BOOST_LOG_TRIVIAL(info) << "ccwallet_server_thread " << argc << " " << i << " " << argv[i];
 	}
 
 	// start server
@@ -188,9 +197,9 @@ void ccwallet_server_gate(vector<string> &args, int my_number)
 
 	if (!argc) cc_malloc_logging(false);
 
-	status = -my_number; // status <= 0 means stopped
+	ccwallet_status = -my_number; // ccwallet_status <= 0 means stopped
 
-	BOOST_LOG_TRIVIAL(info) << "ccwallet_server_gate status " << status;
+	BOOST_LOG_TRIVIAL(info) << "ccwallet_server_thread status " << ccwallet_status;
 }
 
 // call with argc > 0 to asynchonously start ccwallet
@@ -222,10 +231,10 @@ CCWALLET_EXPORT int ccwallet_server_start_stop(int argc, const char **argv)
 	//cerr << (intptr_t)&args << " " << buf2hex(&args, 10) << endl;
 
 	if (!argc)
-		ccwallet_server_gate(args, my_number);
+		ccwallet_server_thread(args, my_number);
 	else
 	{
-		std::thread t(ccwallet_server_gate, ref(args), my_number);
+		std::thread t(ccwallet_server_thread, ref(args), my_number);
 		t.detach();
 	}
 
@@ -234,7 +243,106 @@ CCWALLET_EXPORT int ccwallet_server_start_stop(int argc, const char **argv)
 
 CCWALLET_EXPORT int ccwallet_server_status()
 {
-	//BOOST_LOG_TRIVIAL(info) << "ccwallet_server_status " << status;
+	//BOOST_LOG_TRIVIAL(info) << "ccwallet_server_status " << ccwallet_status;
 
-	return status;
+	return ccwallet_status;
+}
+
+/*
+	Functions to start tor
+*/
+
+extern "C"
+{
+	typedef int (*tor_main_p)(int argc, const char **argv);
+}
+
+static atomic<bool> tor_running(false);
+
+static void ccwallet_tor_thread(vector<string> &args)
+{
+	//cerr << (intptr_t)&args << " " << buf2hex(&args, 10) << endl;
+
+	BOOST_LOG_TRIVIAL(info) << "ccwallet_tor_thread starting tor...";
+
+	vector<wstring> wargs;
+
+	for (auto arg : args)
+		wargs.push_back(s2w(arg));
+
+	auto tor_exe = get_process_dir();
+	if (tor_exe.length()) tor_exe += L"/";
+
+	#ifdef __ANDROID__
+	tor_exe = wargs[0];
+	#else
+	tor_exe += wargs[0];
+	#endif
+
+	tor_start_process(L"", tor_exe, wargs);
+
+#if 0 // unused code to call tor as a DLL
+	void* handle = dlopen("libTor.so", RTLD_LAZY);
+	if (!handle)
+	{
+		BOOST_LOG_TRIVIAL(error) << "Error loading tor library: " << dlerror();
+		return;
+	}
+
+	auto tor_main = (tor_main_p)dlsym(handle, "tor_main");
+	auto error = dlerror();
+	if (error)
+	{
+		BOOST_LOG_TRIVIAL(error) << "Error locating tor_main: " << error;
+		dlclose(handle);
+		return;
+	}
+
+	vector<const char*> argv;
+
+	for (auto arg : args)
+		argv.push_back(arg.c_str());
+
+	tor_main(argv.size(), argv.data());
+
+	dlclose(handle);
+#endif
+
+	tor_running.store(false);
+
+	BOOST_LOG_TRIVIAL(warning) << "ccwallet_tor_thread tor stopped.";
+
+	// free the allocated args
+
+	delete &args;
+}
+
+CCWALLET_EXPORT int ccwallet_tor_start(int argc, const char **argv)
+{
+	g_is_dll = true; // set ccwallet DLL mode
+
+	if (tor_running.exchange(true))
+	{
+		cerr << "ccwallet_tor_start already running" << endl;
+		return 1;
+	}
+
+	cerr << "ccwallet_tor_start argc " << argc << endl;
+
+	// copy the args to allocated memory
+
+	vector<string> &args = *(new vector<string>(argc));
+
+	for (int i = 0; i < argc; ++i)
+	{
+		//BOOST_LOG_TRIVIAL(info) << "ccwallet_server_start_stop " << argc << " " << i << " " << argv[i];
+		args[i] = argv[i];
+	}
+
+	//cerr << (intptr_t)&args << " " << buf2hex(&args, 10) << endl;
+
+	std::thread t(ccwallet_tor_thread, ref(args));
+	t.detach();
+
+	return 0;
 }

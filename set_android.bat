@@ -7,14 +7,18 @@ if "%cc_cpu%" == "arm" (
 	set NDKTARGET=x86_64-linux-android
 ) else exit/b
 
-set NDKVERSION=28.2.13676358
+set NDKINSTALL=%LOCALAPPDATA%\Android\Sdk\ndk\
+
+set NDKVERSION=29.0.14206865
 set NDKminSdkVersion=21
 
-set NDKPREFIX=%LOCALAPPDATA%\Android\Sdk\ndk\%NDKVERSION%
+set NDKPREFIX=%NDKINSTALL%\%NDKVERSION%
 set NDKPATH=%NDKPREFIX%\toolchains\llvm\prebuilt\windows-x86_64
 
 if not exist "%NDKPREFIX%" (
 	echo Directory not found %NDKPREFIX%
+	echo NDK's installed:
+	dir %NDKINSTALL%
 	exit/b
 )
 
@@ -26,7 +30,7 @@ if not exist "%NDKPATH%" (
 set PATH=%cd%\aliases;C:\msys64\usr\bin;\mingw64\bin;%WINDIR%\system32;%WINDIR%
 
 set ACNOWARN=-Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-private-field -Wno-unused-function ^
- -Wno-misleading-indentation -Wno-implicit-function-declaration -Wno-deprecated-declarations ^
+ -Wno-misleading-indentation -Wno-implicit-function-declaration -Wno-deprecated-declarations -Wno-deprecated-literal-operator ^
  -Wno-overloaded-virtual -Wno-array-parameter -Wno-vla-cxx-extension ^
  -Wno-int-conversion -Wno-sign-compare ^
  -Wno-constant-logical-operand -Wno-switch

@@ -57,7 +57,6 @@ extern "C" bool IsInteractive()
 void set_service_pre_configs()
 {
 	g_tor_services.clear();
-
 	g_tor_services.push_back(&g_rpc_service);
 	g_tor_services.push_back(&g_tor_control_service);
 
@@ -618,7 +617,7 @@ int _dowildcard = 0;	// disable wildcard globbing
 
 int main(int argc, const char **argv)
 {
-	for (int i = 0; i < argc && g_is_dll; ++i)
+	for (int i = 0; i < argc; ++i)
 	{
 		char passkey[] = "--wallet-rpc-password";
 		bool notpassword = strncmp(argv[i], passkey, sizeof(passkey)-1);
@@ -691,7 +690,9 @@ int main(int argc, const char **argv)
 	}
 
 	bool need_tor_proxy = g_params.transact_tor || (g_rpc_service.enabled && g_rpc_service.tor_service);
-	thread tor_thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.torproxy_port, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
+	thread tor_thread;
+	if (!g_is_dll)
+		tor_thread = thread(tor_start, g_params.process_dir, g_params.tor_exe, g_params.torproxy_port, g_params.tor_config, g_params.app_data_dir, need_tor_proxy, ref(g_tor_services), g_tor_services.size()-1);
 
 	int result_code = -99;
 

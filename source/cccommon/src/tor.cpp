@@ -13,10 +13,7 @@
 #include "apputil.h"
 #include "osutil.h"
 
-static const wchar_t space_char = 0x0003;
-static const wstring space = L"\x0003";
-
-static void tor_hidden_service_config(bool external_tor, wostringstream& params, wstring& service_port_list, const TorService& service)
+static void tor_hidden_service_config(vector<wstring> &params, wstring &service_port_list, const TorService& service, bool external_tor)
 {
 	if (service.enabled && service.tor_service)
 	{
@@ -30,38 +27,59 @@ static void tor_hidden_service_config(bool external_tor, wostringstream& params,
 			delete_file(dir + WIDE(PATH_DELIMITER) + L"hostname");
 		}
 
-		params << space << "+HiddenServiceDir" << space << "\"" << dir << "\"";
-		params << space << "HiddenServicePort" << space << "\"443 " << service.port << "\"";
-		params << space << "HiddenServiceVersion" << space << "3";
-		if (service.tor_auth == 1)
-			params << space << "HiddenServiceAuthorizeClient" << space << "basic";
+		params.push_back(L"+HiddenServiceDir");
+		params.push_back(dir);
 
-		service_port_list += L" ";
-		service_port_list += to_wstring(service.port);
+		params.push_back(L"HiddenServicePort");
+		params.push_back(L"443 " + to_wstring(service.port));
+
+		params.push_back(L"HiddenServiceVersion");
+		params.push_back(L"3");
+
+		if (service.tor_auth == 1)
+		{
+			params.push_back(L"HiddenServiceAuthorizeClient");
+			params.push_back(L"basic");
+		}
+
+		service_port_list += L" " + to_wstring(service.port);
 	}
 }
 
 void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor_port, const wstring& tor_config, const wstring& app_data_dir, bool need_outgoing, vector<TorService*>& services, unsigned tor_control_service_index)
 {
-#ifndef __ANDROID__
 	bool external_tor = (tor_exe == L"external");
 	bool need_tor = need_outgoing;
-	wostringstream params;
+
+	vector<wstring> params;
 	wstring service_port_list;
+
 	if (external_tor)
-		params << "tor";
+		params.push_back(L"tor");
 	else
-		params << "\"" << tor_exe << "\"";
+		params.push_back(tor_exe);
+
 	if (tor_config.length() && tor_config.compare(L"."))
-		params << space << "-f" << space << "\"" << tor_config << "\"";
-	params << space << "DataDirectory" << space << "\"" << app_data_dir << TOR_SUBDIR << "\"";
-	params << space << "+SOCKSPort" << space << tor_port;
+	{
+		params.push_back(L"-f");
+		params.push_back(tor_config);
+	}
+
+	params.push_back(L"DataDirectory");
+	params.push_back(app_data_dir + s2w(TOR_SUBDIR));
+
+	params.push_back(L"+SOCKSPort");
+	params.push_back(to_wstring(tor_port));
 
 	if (tor_control_service_index < services.size() && services[tor_control_service_index]->enabled)
 	{
 		need_tor = true;
-		params << space << "+ControlPort" << space << services[tor_control_service_index]->port;
-		params << space << "HashedControlPassword" << space << "16:" << s2w(services[tor_control_service_index]->password_string);
+
+		params.push_back(L"+ControlPort");
+		params.push_back(to_wstring(services[tor_control_service_index]->port));
+
+		params.push_back(L"HashedControlPassword");
+		params.push_back(L"16:" + s2w(services[tor_control_service_index]->password_string));
 	}
 
 	if (!need_tor)
@@ -71,38 +89,51 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 	}
 
 	for (auto service : services)
-		tor_hidden_service_config(external_tor, params, service_port_list, *service);
+		tor_hidden_service_config(params, service_port_list, *service, external_tor);
 
-	params << space << "+LongLivedPorts" << space << "\"443" << service_port_list << "\"";
+	params.push_back(L"+LongLivedPorts");
+	params.push_back(L"443" + service_port_list);
 
-	auto paramline = params.str();
+	tor_start_process(process_dir, tor_exe, params, external_tor);
+}
 
-	auto paramline_text = paramline;
-	for (unsigned i = 0; i < paramline_text.length(); ++i)
+void tor_start_process(const wstring& process_dir, const wstring& tor_exe, vector<wstring> &params, bool external_tor)
+{
+	wstring paramline;
+
+	//cerr << "tor_start_process " << w2s(tor_exe) << endl;
+
+	for (auto param : params)
 	{
-		if (paramline_text[i] == space_char)
-			paramline_text[i] = ' ';
+		auto quote = (param.find(L" ") != wstring::npos);
+		//BOOST_LOG_TRIVIAL(info) << "tor_start_process quote " << quote << " param " << w2s(param) << endl;
+		if (quote) paramline += L'"';
+		paramline += param;
+		if (quote) paramline += L'"';
+		paramline += L' ';
 	}
 
 	if (external_tor)
 	{
+		BOOST_LOG_TRIVIAL(info) << "Tor command line: " << w2s(paramline);
 		BOOST_LOG_TRIVIAL(info) << "Skipping Tor launch; Tor must be launched and managed externally";
-
-		BOOST_LOG_TRIVIAL(info) << "Tor command line: " << w2s(paramline_text);
 
 		return;
 	}
 
-	BOOST_LOG_TRIVIAL(info) << "Tor command line: " << w2s(paramline_text);
-
 #ifdef _WIN32
+	BOOST_LOG_TRIVIAL(info) << "Tor process directory: " << w2s(process_dir);
 	PROCESS_INFORMATION pi;
 #else
 	pid_t pid;
 #endif
+
+	BOOST_LOG_TRIVIAL(info) << "Tor executable: " << w2s(tor_exe);
+	BOOST_LOG_TRIVIAL(info) << "Tor command line: " << w2s(paramline);
+
 	bool tor_running = false;
 
-	while (!g_shutdown)
+	while (!g_shutdown || g_is_dll)
 	{
 
 #ifdef _WIN32
@@ -114,16 +145,21 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 		si.hStdError = si.hStdOutput;
 		si.hStdInput = si.hStdOutput;
 
-		if (! CreateProcessW(tor_exe.c_str(), &paramline_text[0], NULL, NULL, TRUE,
-				CREATE_NO_WINDOW | DEBUG_PROCESS, NULL, process_dir.c_str(), &si, &pi))
+		if (! CreateProcessW(tor_exe.c_str(), &paramline[0], NULL, NULL, TRUE,
+				CREATE_NO_WINDOW | DEBUG_PROCESS, NULL, process_dir.length() ? process_dir.c_str() : NULL, &si, &pi))
 		{
-			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << GetLastError();
+			const char *msg = "Unable to start Tor";
+
+			BOOST_LOG_TRIVIAL(error) << msg << "; error = " << GetLastError();
 
 			{
 				lock_guard<mutex> lock(g_cerr_lock);
 				check_cerr_newline();
-				cerr << "ERROR: Unable to start Tor" << endl;
+				cerr << "ERROR: " << msg << endl;
 			}
+
+			if (g_is_dll)
+				return;
 
 			ccsleep(20);
 			continue;
@@ -135,7 +171,7 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 		// Tor processes was created with DEBUG_PROCESS so that it will exit if this process exits
 		// this loop (run in a separate thread) handles and ignores all debug events coming from the subprocess
 
-		while (!g_shutdown)
+		while (!g_shutdown || g_is_dll)
 		{
 			DEBUG_EVENT de;
 
@@ -155,11 +191,16 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 					CloseHandle(pi.hThread);
 
 					tor_running = false;
-					BOOST_LOG_TRIVIAL(error) << "Tor process exited unexpectedly--restart will be attempted in 10 seconds...";
+
+					BOOST_LOG_TRIVIAL(error) << "Tor process exited unexpectedly";
+
+					if (g_is_dll)
+						return;
 
 					ccsleep(10);
 
-					//BOOST_LOG_TRIVIAL(error) << "Attempting to restart Tor...";
+					BOOST_LOG_TRIVIAL(error) << "Attempting to restart Tor...";
+
 					break;
 				}
 			}
@@ -169,77 +210,98 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 				ccsleep(2);
 			}
 		}
-#else
 
-		#define MAX_TOR_ARGS 256
-		const char *argv[MAX_TOR_ARGS];
-		memset(argv, 0, sizeof(argv));
+#else // _WIN32
 
-		auto sparamline = w2s(paramline);
-		argv[0] = &sparamline[1];
-		unsigned nparams = 1;
+		vector<string> args;
+		vector<char*> argv;
 
-		if (sparamline[sparamline.length()-1] == '"')
-			sparamline[sparamline.length()-1] = 0;	// delete the trailing double-quote character
+		for (auto param : params)
+			args.push_back(w2s(param));
 
-		for (unsigned i = 0; i < sparamline.length(); ++i)
+		for (unsigned i = 0; i < args.size(); ++i)
+			argv.push_back(&args[i][0]);
+
+		//for (auto arg : argv)
+		//	BOOST_LOG_TRIVIAL(debug) << "tor_start_process " << arg;
+
+		argv.push_back(NULL);
+
+		int pipefd[2];
+		pipefd[0] = pipefd[1] = -1;
+		pipe(pipefd);
+
+		pid = fork();
+		
+		if (pid == 0)
 		{
-			if ((sparamline[i] & 0xFF) == (space_char & 0xFF))
-			{
-				sparamline[i] = 0;
-				if (sparamline[i-1] == '"')
-					sparamline[i-1] = 0;			// delete the trailing double-quote character
-				argv[nparams++] = &sparamline[i+1];
-				CCASSERT(nparams < MAX_TOR_ARGS);
-			}
+			// child process:
+			if (g_is_dll)
+				dup2(pipefd[1], STDOUT_FILENO); // Redirect stdout to pipe write end
+			close(pipefd[0]);
+			close(pipefd[1]);
+			execvp(w2s(tor_exe).c_str(), argv.data());
+			BOOST_LOG_TRIVIAL(error) << "tor_spawn exec error " << errno;
+			_exit(errno);
 		}
 
-		argv[nparams] = 0;
-
-		for (unsigned i = 0; argv[i]; ++i)
+		if (pid == -1)
 		{
-			if (*argv[i] == '"')
-				++argv[i];							// skip the leading double-quote character
-
-			//cout << "Tor arg " << i << " = " << argv[i] << endl;
-		}
-
-		auto rc = posix_spawnp(&pid,
-				w2s(tor_exe).c_str(),
-				NULL,							// const posix_spawn_file_actions_t *file_actions
-				NULL,							// const posix_spawnattr_t *restrict attrp
-				(char* const*)argv,				// char *const argv[restrict]
-				environ);						// char *const envp[restrict]
-		if (rc)
-		{
-			BOOST_LOG_TRIVIAL(error) << "Unable to start Tor; error = " << rc;
+			const char *msg = "Tor process fork error: ";
+			BOOST_LOG_TRIVIAL(error) << msg << errno;
 
 			{
 				lock_guard<mutex> lock(g_cerr_lock);
 				check_cerr_newline();
-				cerr << "ERROR: Unable to start Tor" << endl;
+				cerr << "ERROR: " << msg << errno << endl;
 			}
+
+			if (g_is_dll)
+				return;
 
 			ccsleep(20);
 			continue;
 		}
 
+	    close(pipefd[1]);
+
 		tor_running = true;
-		BOOST_LOG_TRIVIAL(info) << "Tor started";
+		BOOST_LOG_TRIVIAL(info) << "Tor started, pid " << pid;
 
 		while (true)
 		{
-			if (ccsleep(20))
-				break;
+			char buf[32*1024];
+			ssize_t nbytes;
+			while (g_is_dll && (nbytes = read(pipefd[0], buf, sizeof(buf)-1)) > 0)
+			{
+				while (nbytes > 0 && (buf[nbytes-1] == ' ' || buf[nbytes-1] == '\t' || buf[nbytes-1] == '\n' || buf[nbytes-1] == '\r'))
+					--nbytes;
+
+				buf[nbytes] = 0;
+
+				if (nbytes > 0)
+					BOOST_LOG_TRIVIAL(info) << "Tor: " << buf;
+			}
 
 			auto rc = waitpid(pid, NULL, WNOHANG);
 			if (rc > 0)
 			{
+				close(pipefd[0]);
+
 				tor_running = false;
-				BOOST_LOG_TRIVIAL(error) << "Tor process exited unexpectedly--attempting to restart";
+
+				BOOST_LOG_TRIVIAL(error) << "Tor process " << rc << " exited unexpectedly";
+
+				if (g_is_dll)
+					return;
+
+				BOOST_LOG_TRIVIAL(error) << "Attempting to restart Tor...";
 
 				break;
 			}
+
+			if (ccsleep(1) && !g_is_dll)
+				break;
 		}
 #endif
 	}
@@ -258,5 +320,4 @@ void tor_start(const wstring& process_dir, const wstring& tor_exe, const int tor
 	}
 
 	BOOST_LOG_TRIVIAL(info) << "Tor monitor thread ending";
-#endif // #ifndef __ANDROID__
 }

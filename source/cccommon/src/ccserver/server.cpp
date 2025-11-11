@@ -59,14 +59,12 @@ void Server::Init(const boost::asio::ip::tcp::endpoint& endpoint, unsigned maxco
 
 	// !!! note: also need to check /proc/sys/net/ipv4/tcp_rmem and /proc/sys/net/ipv4/tcp_wmem
 
-	// SO_REUSEADDR allows the server to be restarted if a prior instance was killed and the port state isn't clean
-	// but it is not used because it allows two instances of the server to run at the same time
-	//set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_REUSEADDR, 1);
-
 #ifdef _WIN32
 	// SO_EXCLUSIVEADDRUSE prevents another application from using the same port
 	set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
 #else
+	// Under Linux, SO_REUSEADDR allows the server to bind to a port in the TIME-WAIT state
+	set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_REUSEADDR, 1);
 	// SO_REUSEPORT isn't used because it allows two instances of the server to run at the same time
 	//set_int_opt(m_acceptor.native_handle(), SOL_SOCKET, SO_REUSEPORT, 1);
 	set_int_opt(m_acceptor.native_handle(), IPPROTO_IP, IP_MTU_DISCOVER, 0);
